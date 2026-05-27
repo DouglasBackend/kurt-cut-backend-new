@@ -29,6 +29,7 @@ COPY scripts/ ./scripts/
 RUN npm install --omit=dev
 
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/assets ./assets
 
 EXPOSE 3001
 
