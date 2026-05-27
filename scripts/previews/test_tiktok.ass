@@ -1,0 +1,18 @@
+[Script Info]
+ScriptType: v4.00+
+ScaledBorderAndShadow: yes
+PlayResX: 1080
+PlayResY: 1920
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: ViralStyle, serif sans serif, 161, &H00FFFFFF&, &H0000aaf8&, &H00000000&, &H99000000&, 0, 0, 0, 0, 100, 100, 0, 0, 1, 6, 10, 2, 50, 50, 384, 1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.50,0:00:01.30,ViralStyle,,0,0,0,,{\fscx55\fscy55\t(0,130,\fscx112\fscy112)\t(130,220,\fscx100\fscy100)}{\c&H0000aaf8&\3c&H44FF44&\bord2.5\shad1}Isso{\c&H00FFFFFF&\3c&H00000000&\bord6\shad10} é um
+Dialogue: 0,0:00:01.30,0:00:01.90,ViralStyle,,0,0,0,,Isso {\c&H0000aaf8&\3c&H44FF44&\bord2.5\shad1}é{\c&H00FFFFFF&\3c&H00000000&\bord6\shad10} um
+Dialogue: 0,0:00:01.90,0:00:02.50,ViralStyle,,0,0,0,,Isso é {\c&H0000aaf8&\3c&H44FF44&\bord2.5\shad1}um{\c&H00FFFFFF&\3c&H00000000&\bord6\shad10}
+Dialogue: 0,0:00:02.60,0:00:03.30,ViralStyle,,0,0,0,,{\fscx55\fscy55\t(0,130,\fscx112\fscy112)\t(130,220,\fscx100\fscy100)}{\c&H0000aaf8&\3c&H44FF44&\bord2.5\shad1}teste{\c&H00FFFFFF&\3c&H00000000&\bord6\shad10} do modelo!
+Dialogue: 0,0:00:03.30,0:00:04.10,ViralStyle,,0,0,0,,teste {\c&H0000aaf8&\3c&H44FF44&\bord2.5\shad1}do{\c&H00FFFFFF&\3c&H00000000&\bord6\shad10} modelo!
+Dialogue: 0,0:00:04.10,0:00:04.80,ViralStyle,,0,0,0,,teste do {\c&H0000aaf8&\3c&H44FF44&\bord2.5\shad1}modelo!{\c&H00FFFFFF&\3c&H00000000&\bord6\shad10}

@@ -1,0 +1,60 @@
+# Compiled output
+/dist/
+/node_modules
+
+/test
+/upload
+/storage
+/uploads
+/tmp
+/temp
+
+# Logs
+*.log
+error.log
+err.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environments
+.env
+.env.*
+.env*
+*.env
+*.env.local
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Miscellaneous
+cookies.txt
+nest-cli.json
+
+*.zip
+*.rar
+
