@@ -65,6 +65,12 @@ import { StorageModule } from './common/storage/storage.module';
     BullModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (config: ConfigService) => {
+        const redisUrl = config.get<string>('REDIS_URL');
+        if (redisUrl) {
+          return {
+            redis: redisUrl,
+          };
+        }
         const password = config.get('REDIS_PASSWORD', '');
         return {
           redis: {
