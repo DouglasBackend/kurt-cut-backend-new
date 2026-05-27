@@ -28,6 +28,7 @@ COPY scripts/ ./scripts/
 # Install only production dependencies (this will trigger fix-ytdlp.js automatically)
 RUN npm install --omit=dev
 
+# Copy the built application and assets from the builder stage
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/assets ./assets
 
