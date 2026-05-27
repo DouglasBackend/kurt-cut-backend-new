@@ -70,26 +70,66 @@ export class VideoProcessingProcessor {
         if (videoParam) cleanUrl = `https://www.youtube.com/watch?v=${videoParam}`;
       } catch { /* keep original */ }
 
-      const cookiesPath = path.join(process.cwd(), 'cookies.txt');
-      const hasCookies = fs.existsSync(cookiesPath);
       const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+      let cookiesPath = path.join(process.cwd(), 'cookies.txt');
+      let hasCookies = fs.existsSync(cookiesPath);
+      let isTempCookies = false;
+
+      const envCookies = process.env.YOUTUBE_COOKIES;
+      if (envCookies) {
+        try {
+          const tempCookiesPath = path.join(videoDir, `cookies_${videoId}.txt`);
+          let cookiesContent = envCookies;
+          
+          // Decode if it's base64 (doesn't contain tabs/newlines and looks like base64)
+          if (!envCookies.includes('\n') && !envCookies.includes('\t') && envCookies.length > 100) {
+            try {
+              const decoded = Buffer.from(envCookies.trim(), 'base64').toString('utf-8');
+              if (decoded.includes('# Netscape') || decoded.includes('\t')) {
+                cookiesContent = decoded;
+                this.logger.log(`[${videoId}] Decoded YouTube cookies from Base64`);
+              }
+            } catch { /* use original */ }
+          }
+          
+          fs.writeFileSync(tempCookiesPath, cookiesContent);
+          cookiesPath = tempCookiesPath;
+          hasCookies = true;
+          isTempCookies = true;
+          this.logger.log(`[${videoId}] YouTube cookies written from env variable to: ${tempCookiesPath}`);
+        } catch (err) {
+          this.logger.error(`[${videoId}] Failed to write cookies from env: ${err.message}`);
+        }
+      }
 
       const ytDlp = require('yt-dlp-exec');
       const binPath = path.join(process.cwd(), 'node_modules', 'yt-dlp-exec', 'bin', 'yt-dlp');
       this.logger.log(`[${videoId}] yt-dlp Path: ${binPath} (Exists: ${fs.existsSync(binPath)})`);
       this.logger.log(`[${videoId}] Using static FFmpeg: ${ffmpegPath}`);
 
-      await ytDlp(cleanUrl, {
-        noPlaylist: true,
-        retries: 3,
-        cookies: hasCookies ? cookiesPath : undefined,
-        userAgent: userAgent,
-        extractorArgs: 'youtube:player-client=android',
-        format: 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best',
-        output: videoPath,
-        jsRuntimes: 'node',
-        ffmpegLocation: ffmpegPath,
-      });
+      try {
+        await ytDlp(cleanUrl, {
+          noPlaylist: true,
+          retries: 3,
+          cookies: hasCookies ? cookiesPath : undefined,
+          userAgent: userAgent,
+          extractorArgs: 'youtube:player-client=android',
+          format: 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best',
+          output: videoPath,
+          jsRuntimes: 'node',
+          ffmpegLocation: ffmpegPath,
+        });
+      } finally {
+        if (isTempCookies && fs.existsSync(cookiesPath)) {
+          try {
+            fs.unlinkSync(cookiesPath);
+            this.logger.log(`[${videoId}] Cleaned up temporary cookies file`);
+          } catch (e) {
+            this.logger.warn(`[${videoId}] Failed to cleanup temporary cookies: ${e.message}`);
+          }
+        }
+      }
 
       if (!fs.existsSync(videoPath)) throw new Error('Download failed');
 
