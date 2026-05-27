@@ -84,6 +84,7 @@ export class VideoProcessingProcessor {
         retries: 3,
         cookies: hasCookies ? cookiesPath : undefined,
         userAgent: userAgent,
+        extractorArgs: 'youtube:player-client=android',
         format: 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best',
         output: videoPath,
         jsRuntimes: 'node',
