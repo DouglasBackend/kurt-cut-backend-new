@@ -50,11 +50,9 @@ export class VideoProcessingProcessor {
   @Process({ name: VideoJobType.DOWNLOAD_YOUTUBE, concurrency: 2 })
   async handleDownloadYoutube(job: Job<any>) {
     const { videoId, youtubeUrl, preferences, usuarioId } = job.data;
-    const uploadDir = this.storageService.getAbsoluteUploadDir();
-    const videoDir = path.join(uploadDir, videoId);
-    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir, { recursive: true });
-
-    const videoPath = path.join(videoDir, 'video.mp4');
+    // Usa diretório temporário local para download do YouTube
+    const tempVideoDir = this.storageService.getTempDir(videoId);
+    const videoPath = path.join(tempVideoDir, 'video.mp4');
 
     try {
       await job.progress(5);
@@ -79,7 +77,7 @@ export class VideoProcessingProcessor {
       const envCookies = process.env.YOUTUBE_COOKIES;
       if (envCookies) {
         try {
-          const tempCookiesPath = path.join(videoDir, `cookies_${videoId}.txt`);
+          const tempCookiesPath = path.join(tempVideoDir, `cookies_${videoId}.txt`);
           let cookiesContent = envCookies;
           
           // Decode if it's base64 (doesn't contain tabs/newlines and looks like base64)
@@ -133,14 +131,19 @@ export class VideoProcessingProcessor {
 
       if (!fs.existsSync(videoPath)) throw new Error('Download failed');
 
-      // Local storage path
+      // Upload do vídeo baixado para Supabase Storage
       const relativePath = `${videoId}/video.mp4`;
+      const videoBuffer = fs.readFileSync(videoPath);
+      await this.storageService.uploadFile(relativePath, videoBuffer, 'video/mp4');
+      this.logger.log(`[${videoId}] Vídeo do YouTube enviado para Supabase Storage: ${relativePath}`);
+
       await vRepo.update(videoId, { caminho_arquivo: relativePath });
       await job.progress(30);
       this.eventsGateway.emitVideoProgress(videoId, 30, 'Download concluído. Transcrevendo áudio...');
 
+      // Transcrever usando o arquivo local temporário (mais eficiente que baixar de novo)
       await this.transcribeAndAnalyze(
-        usuarioId, videoId, videoPath, job, preferences, job.data.analysisOnly, false // false means keep local file
+        usuarioId, videoId, videoPath, job, preferences, job.data.analysisOnly, true // true = limpar arquivo local ao final
       );
     } catch (error) {
       this.logger.error(`[${videoId}] YT download failed: ${error.message}`);
@@ -150,6 +153,8 @@ export class VideoProcessingProcessor {
         status_analise: 'error',
       });
       this.eventsGateway.emitVideoError(videoId, error.message);
+      // Limpar diretório temporário em caso de erro
+      this.storageService.cleanupTempDir(tempVideoDir);
       throw error;
     }
   }
@@ -171,19 +176,10 @@ export class VideoProcessingProcessor {
       });
       await job.progress(10);
 
-      // Check if remote (backward compatibility or external)
-      const isRemote = !path.isAbsolute(filePath) && !filePath.includes(':') && !filePath.includes('/');
-      let localPath = filePath;
-      
-      if (isRemote) {
-        const uploadDir = this.storageService.getAbsoluteUploadDir();
-        localPath = path.join(uploadDir, `temp_proc_${videoId}${path.extname(filePath)}`);
-        this.logger.log(`[${videoId}] Downloading remote video for processing: ${filePath}`);
-        await this.storageService.downloadFile(filePath, localPath);
-      } else if (!path.isAbsolute(filePath)) {
-        // Assume it's a relative path in our structured storage
-        localPath = this.storageService.getAbsolutePath(filePath);
-      }
+      // Baixar do Supabase para diretório temporário local
+      const localPath = this.storageService.getTempPath(`${videoId}/${path.basename(filePath)}`);
+      this.logger.log(`[${videoId}] Baixando vídeo do Supabase para processamento: ${filePath}`);
+      await this.storageService.downloadFile(filePath, localPath);
 
       await this.transcribeAndAnalyze(
         usuarioId,
@@ -192,7 +188,7 @@ export class VideoProcessingProcessor {
         job,
         preferences,
         job.data.analysisOnly,
-        isRemote // delete if it was remote (temp)
+        true // true = limpar arquivo local ao final
       );
     } catch (error) {
       this.logger.error(`[${videoId}] Processing failed: ${error.message}`);
@@ -270,17 +266,17 @@ export class VideoProcessingProcessor {
     let audioFeatures = await audioFeaturesPromise;
     const video = await vRepo.findOne({ where: { id: videoId } });
 
-    // Persist audio features for reuse
+    // Persist audio features no Supabase Storage
     if (audioFeatures) {
       try {
-        const audioFeaturesPath = path.join(
-          this.storageService.getAbsoluteUploadDir(),
-          videoId, 'audio_features.json'
+        const audioFeaturesJson = JSON.stringify(audioFeatures, null, 2);
+        const audioFeaturesPath = `${videoId}/audio_features.json`;
+        await this.storageService.uploadFile(
+          audioFeaturesPath,
+          Buffer.from(audioFeaturesJson),
+          'application/json',
         );
-        const dir = path.dirname(audioFeaturesPath);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(audioFeaturesPath, JSON.stringify(audioFeatures, null, 2));
-        this.logger.log(`[${videoId}] Audio features saved to ${audioFeaturesPath}`);
+        this.logger.log(`[${videoId}] Audio features saved to Supabase: ${audioFeaturesPath}`);
       } catch (e) {
         this.logger.warn(`[${videoId}] Failed to persist audio features: ${e.message}`);
       }
@@ -319,7 +315,16 @@ export class VideoProcessingProcessor {
       this.logger.log(`[${videoId}] Analysis already exists, skipping.`);
       analysis = video.resultado_analise;
     } else {
-      const videoDuration = video?.duracao || 0;
+      let videoDuration = video?.duracao || 0;
+      if (videoDuration === 0 && filteredWords && filteredWords.length > 0) {
+        const lastWord = filteredWords[filteredWords.length - 1];
+        videoDuration = Math.round((lastWord.end || 0) / 1000);
+        // Save duration to DB
+        if (videoDuration > 0) {
+           const vRepo = await this.getVideosRepo(usuarioId);
+           await vRepo.update(videoId, { duracao: videoDuration });
+        }
+      }
       // Gerar o máximo de clipes possíveis: ~1 clipe a cada 30s de vídeo. Mínimo 5, Máximo 20.
       const clipsToGenerate = Math.max(5, Math.min(20, Math.floor(videoDuration / 30)));
       
@@ -366,7 +371,13 @@ export class VideoProcessingProcessor {
     if (cleanupLocal && fs.existsSync(filePath)) {
       try {
         fs.unlinkSync(filePath);
-        this.logger.log(`[${videoId}] Cleaned up local file: ${filePath}`);
+        this.logger.log(`[${videoId}] Cleaned up local temp file: ${filePath}`);
+        // Tentar limpar o diretório pai se estiver vazio
+        const parentDir = path.dirname(filePath);
+        const remaining = fs.readdirSync(parentDir);
+        if (remaining.length === 0) {
+          fs.rmdirSync(parentDir);
+        }
       } catch (e) {
         this.logger.warn(`[${videoId}] Cleanup failed: ${e.message}`);
       }
@@ -423,19 +434,23 @@ export class ClipExportProcessor {
   @Process({ name: ClipJobType.CLEANUP_TEMP, concurrency: 1 })
   async handleCleanup(job: Job<any>) {
     const maxAge = (job.data.maxAgeHours || 24) * 3600 * 1000;
-    const uploadDir =
-      process.env.UPLOAD_DIR || path.join(process.cwd(), 'uploads');
+    const os = require('os');
+    const tempDir = path.join(os.tmpdir(), 'kurt-cut-tmp');
     const now = Date.now();
     let cleaned = 0;
     try {
-      const files = fs.readdirSync(uploadDir);
-      for (const file of files) {
-        if (!file.startsWith('temp_') && !file.startsWith('sub_')) continue;
-        const fullPath = path.join(uploadDir, file);
+      if (!fs.existsSync(tempDir)) return;
+      const entries = fs.readdirSync(tempDir);
+      for (const entry of entries) {
+        const fullPath = path.join(tempDir, entry);
         try {
           const stat = fs.statSync(fullPath);
           if (now - stat.mtimeMs > maxAge) {
-            fs.unlinkSync(fullPath);
+            if (stat.isDirectory()) {
+              fs.rmSync(fullPath, { recursive: true, force: true });
+            } else {
+              fs.unlinkSync(fullPath);
+            }
             cleaned++;
           }
         } catch (fileErr) {
@@ -443,7 +458,7 @@ export class ClipExportProcessor {
           continue;
         }
       }
-      this.logger.log(`Cleanup: removed ${cleaned} stale temp files`);
+      this.logger.log(`Cleanup: removed ${cleaned} stale temp entries`);
     } catch (e) {
       this.logger.warn(`Cleanup error: ${e.message}`);
     }

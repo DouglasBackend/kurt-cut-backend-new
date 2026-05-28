@@ -63,14 +63,12 @@ export class ClipsService {
       const response = await axios({
         url,
         method: 'GET',
-        responseType: 'stream',
+        responseType: 'arraybuffer',
       });
-      const writer = fs.createWriteStream(targetPath);
-      response.data.pipe(writer);
-      return new Promise((resolve, reject) => {
-        writer.on('finish', () => resolve(targetPath));
-        writer.on('error', reject);
-      });
+      const dir = path.dirname(targetPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(targetPath, Buffer.from(response.data));
+      return targetPath;
     } catch (e) {
       this.logger.error(`Falha ao baixar miniatura: ${e.message}`);
       return null;
@@ -165,36 +163,32 @@ export class ClipsService {
     });
     if (!clip || !clip.video?.caminho_arquivo) return;
 
-    let videoPath = clip.video.caminho_arquivo;
-    const isRemote = !path.isAbsolute(videoPath) && !videoPath.includes(':');
-    let localVideoPath = videoPath;
+    const videoId = clip.video_id;
+    const tempDir = this.storageService.getTempDir(videoId);
+    const localVideoPath = path.join(tempDir, `thumb_src_${clipId}${path.extname(clip.video.caminho_arquivo)}`);
 
-    if (isRemote) {
-      const uploadDir = this.storageService.getAbsoluteUploadDir();
-      localVideoPath = path.resolve(uploadDir, `temp_thumb_${clipId}${path.extname(videoPath)}`);
-      try {
-        await this.storageService.downloadFile(videoPath, localVideoPath);
-      } catch (e) {
-        this.logger.error(`[clips] Failed to download video for thumb: ${e.message}`);
-        return;
-      }
-    } else if (!path.isAbsolute(videoPath)) {
-      localVideoPath = this.storageService.getAbsolutePath(videoPath);
+    // Baixar vídeo do Supabase para temporário
+    try {
+      await this.storageService.downloadFile(clip.video.caminho_arquivo, localVideoPath);
+    } catch (e) {
+      this.logger.error(`[clips] Failed to download video for thumb: ${e.message}`);
+      return;
     }
 
-    const videoId = clip.video_id;
     const thumbName = `thumb_${clipId}.jpg`;
     const relativePath = `${videoId}/thumbnails/${thumbName}`;
-    const absoluteThumbPath = this.storageService.getAbsolutePath(relativePath);
-    const thumbDir = path.dirname(absoluteThumbPath);
-    if (!fs.existsSync(thumbDir)) fs.mkdirSync(thumbDir, { recursive: true });
+    const localThumbPath = path.join(tempDir, thumbName);
 
     try {
       const seekTime = clip.tempo_inicio + 0.1;
       await execAsync(
-        `"${ffmpegPath}" -ss ${seekTime} -i "${localVideoPath}" -vframes 1 -q:v 4 -y "${absoluteThumbPath}"`,
+        `"${ffmpegPath}" -ss ${seekTime} -i "${localVideoPath}" -vframes 1 -q:v 4 -y "${localThumbPath}"`,
       );
-      if (fs.existsSync(absoluteThumbPath)) {
+      if (fs.existsSync(localThumbPath)) {
+        // Upload thumbnail para Supabase Storage
+        const thumbBuffer = fs.readFileSync(localThumbPath);
+        await this.storageService.uploadFile(relativePath, thumbBuffer, 'image/jpeg');
+
         await clipsRepo.update(clipId, { miniatura_caminho: relativePath });
         this.eventsGateway.emitClipReady(clip.video_id, {
           id: clipId,
@@ -204,9 +198,9 @@ export class ClipsService {
     } catch (e) {
       console.error(`[clips] Thumb fail: ${e.message}`);
     } finally {
-      if (isRemote && fs.existsSync(localVideoPath)) {
-        try { fs.unlinkSync(localVideoPath); } catch {}
-      }
+      // Limpar arquivos temporários
+      this.storageService.cleanupTempFile(localVideoPath);
+      this.storageService.cleanupTempFile(localThumbPath);
     }
   }
 
@@ -322,27 +316,14 @@ export class ClipsService {
     const storageInputFile = video.caminho_arquivo;
     if (!storageInputFile) throw new NotFoundException('Video path missing');
 
-    const envUploadDir = this.configService.get<string>(
-      'UPLOAD_DIR',
-      'upload',
-    );
-    const uploadDir = path.isAbsolute(envUploadDir)
-      ? envUploadDir
-      : path.resolve(process.cwd(), envUploadDir);
+    const videoId = clip.video_id;
 
-    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+    // Baixar vídeo do Supabase para diretório temporário local
+    const tempDir = this.storageService.getTempDir(`${videoId}/clips`);
+    const inputPath = path.join(tempDir, `input_${clipId}${path.extname(storageInputFile)}`);
 
-    const isRemoteInput = !path.isAbsolute(storageInputFile) && !storageInputFile.includes(':') && !storageInputFile.includes('/');
-    let inputPath = storageInputFile;
-
-    if (isRemoteInput) {
-      const uploadDir = this.storageService.getAbsoluteUploadDir();
-      inputPath = path.join(uploadDir, `temp_input_${clipId}${path.extname(storageInputFile)}`);
-      this.logger.log(`[clip:${clipId}] Downloading remote video: ${storageInputFile}`);
-      await this.storageService.downloadFile(storageInputFile, inputPath);
-    } else if (!path.isAbsolute(storageInputFile)) {
-      inputPath = this.storageService.getAbsolutePath(storageInputFile);
-    }
+    this.logger.log(`[clip:${clipId}] Baixando vídeo do Supabase: ${storageInputFile}`);
+    await this.storageService.downloadFile(storageInputFile, inputPath);
 
     if (!fs.existsSync(inputPath)) {
       this.logger.error(
@@ -353,17 +334,13 @@ export class ClipsService {
       );
     }
 
-    const videoId = clip.video_id;
     const runId = Date.now().toString() + Math.random().toString(36).substring(2, 7);
     
-    // Structured paths
+    // Paths temporários locais para processamento FFmpeg
     const clipRelativePath = `${videoId}/clips/clip_${clipId}.mp4`;
-    const finalOutputFile = this.storageService.getAbsolutePath(clipRelativePath);
-    const clipDir = path.dirname(finalOutputFile);
-    if (!fs.existsSync(clipDir)) fs.mkdirSync(clipDir, { recursive: true });
-
-    const outputFile = path.join(clipDir, `clip_${clipId}_${runId}.mp4`);
-    const tempBase = path.join(clipDir, `temp_base_${clipId}.mp4`);
+    const finalOutputFile = path.join(tempDir, `clip_${clipId}.mp4`);
+    const outputFile = path.join(tempDir, `clip_${clipId}_${runId}.mp4`);
+    const tempBase = path.join(tempDir, `temp_base_${clipId}.mp4`);
 
     await repo.update(clipId, { status: 'processing' });
     this.eventsGateway.emitClipExportProgress(clipId, clip.video_id, 5);
@@ -387,8 +364,7 @@ export class ClipsService {
         const videoRepo = await this.videosRepoFn(usuarioId);
         const video = await videoRepo.findOne({ where: { id: clip.video_id } });
         if (video?.miniatura_youtube) {
-          const thumbFile = `thumb_${clip.video_id}.jpg`;
-          const localThumbPath = path.join(uploadDir, thumbFile);
+          const localThumbPath = path.join(tempDir, `thumb_${clip.video_id}.jpg`);
           thumbnailPath = await this.downloadThumbnail(video.miniatura_youtube, localThumbPath);
         }
       }
@@ -468,7 +444,7 @@ export class ClipsService {
 
       const mapArgs = isComplex ? '-map "[vout]" -map 0:a?' : '-map 0:v -map 0:a?';
 
-      const secondaryInputArg = secondaryVideoPath ? `-i "${this.storageService.getAbsolutePath(secondaryVideoPath)}"` : '';
+      const secondaryInputArg = secondaryVideoPath ? `-i "${this.storageService.getTempPath(secondaryVideoPath)}"` : '';
       const thumbInputArg = thumbnailPath ? `-i "${thumbnailPath}"` : '';
       
       // Brush overlay for KurtCut mode
@@ -518,7 +494,7 @@ export class ClipsService {
           this.logger.log(`[clip:${clipId}] No temp_base found, encoding fresh...`);
         }
 
-        await execAsync(encodeCmd, { timeout: 600000, cwd: uploadDir });
+        await execAsync(encodeCmd, { timeout: 600000, cwd: tempDir });
 
         // Aguarda o SO liberar o arquivo (crítico no Windows)
         await new Promise<void>((resolve, reject) => {
@@ -672,44 +648,31 @@ export class ClipsService {
           }
         }
       } else {
-        // No subtitles or not final export → ensure outputFile exists by copying tempBase
+        // No subtitles or not final export → ensure finalOutputFile exists by copying tempBase
         try {
-          fs.copyFileSync(tempBase, outputFile);
+          fs.copyFileSync(tempBase, finalOutputFile);
         } catch (copyErr: any) {
-          this.logger.error(`Error copying tempBase to outputFile: ${copyErr.message}`);
+          this.logger.error(`Error copying tempBase to finalOutputFile: ${copyErr.message}`);
         }
       }
       this.eventsGateway.emitClipExportProgress(clipId, clip.video_id, 95);
 
       // safeUnlink(tempBase); // Mantido para re-edição rápida
 
-      // Local structured path already saved in finalOutputFile (renamed or moved later if needed)
-      // Actually canvasSubtitle and others might have saved it to outputFile
-      if (fs.existsSync(outputFile)) {
-        if (fs.existsSync(finalOutputFile)) {
-          try {
-            fs.unlinkSync(finalOutputFile);
-          } catch (e) {}
-        }
-        try {
-          fs.renameSync(outputFile, finalOutputFile);
-        } catch (renameErr: any) {
-          if (
-            renameErr.code === 'EBUSY' ||
-            renameErr.code === 'EPERM' ||
-            renameErr.code === 'EXDEV'
-          ) {
-            this.logger.warn(
-              `Final move nested BUSY (Windows), falling back to copy+unlink: ${outputFile}`,
-            );
-            fs.copyFileSync(outputFile, finalOutputFile);
-            try {
-              fs.unlinkSync(outputFile);
-            } catch (e) {}
-          } else {
-            throw renameErr;
-          }
-        }
+      // Determinar qual arquivo final usar (outputFile tem legendas, finalOutputFile não)
+      const fileToUpload = fs.existsSync(outputFile) ? outputFile : finalOutputFile;
+
+      // Upload do resultado final para Supabase Storage
+      if (fs.existsSync(fileToUpload)) {
+        const clipBuffer = fs.readFileSync(fileToUpload);
+        await this.storageService.uploadFile(clipRelativePath, clipBuffer, 'video/mp4');
+        this.logger.log(`[clip:${clipId}] Clip enviado para Supabase: ${clipRelativePath}`);
+      }
+
+      // Upload do temp_base para Supabase também (para re-edição rápida)
+      if (fs.existsSync(tempBase)) {
+        const tempBaseBuffer = fs.readFileSync(tempBase);
+        await this.storageService.uploadFile(tempRelative, tempBaseBuffer, 'video/mp4');
       }
 
       const updateData: Partial<Clip> = {
@@ -725,17 +688,21 @@ export class ClipsService {
         status: 'completed',
       });
 
-      // Local cleanup
-      if (fs.existsSync(outputFile)) safeUnlink(outputFile);
-      if (isRemoteInput) safeUnlink(inputPath);
+      // Limpar arquivos temporários locais
+      safeUnlink(outputFile);
+      safeUnlink(finalOutputFile);
+      safeUnlink(tempBase);
+      safeUnlink(inputPath);
 
       return this.findOne(usuarioId, clipId);
     } catch (error) {
       console.error('Export pipeline error:', error.message);
       if (error.stderr) console.error('stderr:', error.stderr);
 
-      // safeUnlink(tempBase); // Mantido em caso de erro para re-tentar rápido
-      if (isRemoteInput && inputPath && fs.existsSync(inputPath)) safeUnlink(inputPath);
+      // Limpar arquivos temporários em caso de erro
+      safeUnlink(inputPath);
+      safeUnlink(outputFile);
+      safeUnlink(tempBase);
 
       await repo.update(clipId, { status: 'error' });
       this.eventsGateway.emitVideoError(
@@ -940,17 +907,11 @@ export class ClipsService {
 
     for (const existing of existingClips) {
       try {
-        if (
-          existing.caminho_arquivo &&
-          fs.existsSync(existing.caminho_arquivo)
-        ) {
-          fs.unlinkSync(existing.caminho_arquivo);
+        if (existing.caminho_arquivo) {
+          await this.storageService.deleteFile(existing.caminho_arquivo).catch(() => {});
         }
-        if (
-          existing.miniatura_caminho &&
-          fs.existsSync(existing.miniatura_caminho)
-        ) {
-          fs.unlinkSync(existing.miniatura_caminho);
+        if (existing.miniatura_caminho) {
+          await this.storageService.deleteFile(existing.miniatura_caminho).catch(() => {});
         }
       } catch (e) {
         console.warn(`[clips] Could not delete clip assets: ${e.message}`);
@@ -1075,11 +1036,9 @@ export class ClipsService {
       const videoId = clip.video_id;
       const thumbName = `thumb_${clip.id}_custom.jpg`;
       const relativePath = `${videoId}/thumbnails/${thumbName}`;
-      const absolutePath = this.storageService.getAbsolutePath(relativePath);
-      const parentDir = path.dirname(absolutePath);
-      if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true });
       
-      fs.writeFileSync(absolutePath, buffer);
+      // Upload para Supabase Storage
+      await this.storageService.uploadFile(relativePath, buffer, 'image/jpeg');
       clip.miniatura_caminho = relativePath;
     }
 

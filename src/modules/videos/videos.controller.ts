@@ -1,17 +1,12 @@
 import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseInterceptors, UploadedFile, UseGuards, Request, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { extname } from 'path';
+import { memoryStorage } from 'multer';
 import * as path from 'path';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { VideosService } from './videos.service';
 import { StorageService } from '../../common/storage/storage.service';
-import { sanitizePath } from '../../common/utils/path-utils';
 
-const storage = diskStorage({
-  destination: process.env.UPLOAD_DIR || 'upload',
-  filename: (_, file, cb) => cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${extname(file.originalname)}`),
-});
+const storage = memoryStorage();
 
 @Controller('api/videos')
 @UseGuards(JwtAuthGuard)
@@ -43,7 +38,7 @@ export class VideosController {
     return {
       ...v,
       title: v.titulo,
-      youtube_thumbnail: v.miniatura_youtube,
+      youtube_thumbnail: getUrl(v.miniatura_youtube),
       file_path: getUrl(v.caminho_arquivo),
       creator: v.criador,
       views: v.visualizacoes,
@@ -126,7 +121,7 @@ export class VideosController {
   }
 
   @Post('upload')
-  @UseInterceptors(FileInterceptor('file', { storage, limits: { fileSize: 2 * 1024 * 1024 * 1024 } }))
+  @UseInterceptors(FileInterceptor('file', { storage, limits: { fileSize: 500 * 1024 * 1024 } }))
   async uploadVideo(@UploadedFile() file: Express.Multer.File, @Body('projectId') projectId: string, @Request() req) {
     const v = await this.videosService.uploadVideo(req.user.id, projectId, file);
     return this.mapVideo(v);
@@ -155,7 +150,7 @@ export class VideosController {
   }
 
   @Post(':id/upload-audio')
-  @UseInterceptors(FileInterceptor('file', { storage, limits: { fileSize: 2 * 1024 * 1024 * 1024 } }))
+  @UseInterceptors(FileInterceptor('file', { storage, limits: { fileSize: 500 * 1024 * 1024 } }))
   uploadAudio(@UploadedFile() file: Express.Multer.File, @Param('id') id: string, @Request() req) {
     return this.videosService.uploadAudioForVideo(req.user.id, id, file);
   }

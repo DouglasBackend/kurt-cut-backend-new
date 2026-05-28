@@ -20,10 +20,6 @@ export class TenantDbManager implements OnModuleDestroy {
     const secret = this.configService.get<string>('SECRET_TENANT', 'kurt_');
     const dbName = `${secret}${usuarioId.replace(/-/g, '_')}`;
 
-    this.logger.log(
-      `[Tenant] Selecting database: ${dbName} for user: ${usuarioId}`,
-    );
-
     if (this.dataSources.has(dbName)) {
       const existing = this.dataSources.get(dbName);
       if (existing && existing.isInitialized) return existing;
@@ -42,7 +38,6 @@ export class TenantDbManager implements OnModuleDestroy {
       const password = this.configService.get<string>('GLOBAL_DB_PASS')!;
 
       // ── Auto-create tenant database if it doesn't exist ──────────────────
-      this.logger.log(`[Tenant] Checking if database ${dbName} exists...`);
       const adminDs = new DataSource({
         type: 'postgres',
         host,
@@ -68,14 +63,11 @@ export class TenantDbManager implements OnModuleDestroy {
           // this.logger.log(`[Tenant] Database ${dbName} created successfully.`);
         }
       } catch (err) {
-        this.logger.warn(
-          `[Tenant] Administrative check/create failed for ${dbName}: ${err.message}. Proceeding to direct connection.`,
-        );
+        // Ignora aviso de criação de DB, omitido por segurança de log
       } finally {
         if (adminDs.isInitialized) await adminDs.destroy();
       }
 
-      this.logger.log(`[Tenant] Connecting to tenant database: ${dbName}...`);
       const dataSource = new DataSource({
         type: 'postgres',
         host,

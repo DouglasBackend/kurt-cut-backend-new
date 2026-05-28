@@ -11,6 +11,7 @@ import { v4 as uuidv4 } from 'uuid';
 import * as fs from 'fs';
 import * as path from 'path';
 import { TenantDbManager } from '../tenant/tenant-db.manager';
+import { StorageService } from '../../common/storage/storage.service';
 
 @Injectable()
 export class YoutubeService {
@@ -22,6 +23,7 @@ export class YoutubeService {
     constructor(
         private readonly configService: ConfigService,
         private readonly tenantDb: TenantDbManager,
+        private readonly storageService: StorageService,
     ) {
         const clientId = this.configService.get<string>('YOUTUBE_CLIENT_ID');
         const clientSecret = this.configService.get<string>('YOUTUBE_CLIENT_SECRET');
@@ -200,22 +202,14 @@ export class YoutubeService {
 
         const youtube = google.youtube({ version: 'v3', auth: this.oauth2Client });
 
-        let absolutePath = filePath;
-        if (!path.isAbsolute(filePath)) {
-            const uploadDir = this.configService.get<string>('UPLOAD_DIR', 'uploads');
-            const cleanUploadDir = uploadDir.replace(/^[\/\\]/, '').replace(/[\/\\]$/, '');
-            const cleanFilePath = filePath.replace(/^[\/\\]?uploads[\/\\]/, '').replace(/^[\\\/]/, '');
-            
-            absolutePath = path.resolve(process.cwd(), cleanUploadDir, cleanFilePath);
+        // Baixar do Supabase Storage para arquivo temporário local
+        const tempDir = this.storageService.getTempDir('youtube_upload');
+        const absolutePath = path.join(tempDir, `yt_upload_${Date.now()}${path.extname(filePath)}`);
 
-            if (!fs.existsSync(absolutePath)) {
-                // Fallback for different variations
-                absolutePath = path.resolve(process.cwd(), 'uploads', cleanFilePath);
-            }
-        }
-
-        if (!fs.existsSync(absolutePath)) {
-            throw new NotFoundException(`Arquivo de vídeo não encontrado em: ${absolutePath}`);
+        try {
+            await this.storageService.downloadFile(filePath, absolutePath);
+        } catch (e) {
+            throw new NotFoundException(`Arquivo de vídeo não encontrado no Supabase Storage: ${filePath}`);
         }
 
         const fileSize = fs.statSync(absolutePath).size;
@@ -251,6 +245,8 @@ export class YoutubeService {
         } catch (error) {
             this.logger.error('Error uploading video to YouTube', error);
             throw new BadRequestException('Falha ao upar o vídeo no YouTube');
+        } finally {
+            this.storageService.cleanupTempFile(absolutePath);
         }
     }
 

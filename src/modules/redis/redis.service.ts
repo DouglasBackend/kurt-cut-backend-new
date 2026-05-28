@@ -12,7 +12,11 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   onModuleInit() {
     const redisUrl = this.configService.get<string>('REDIS_URL');
     if (redisUrl) {
-      this.redisClient = new Redis(redisUrl);
+      const isTls = redisUrl.startsWith('rediss://');
+      this.redisClient = new Redis(redisUrl, {
+        ...(isTls ? { tls: { rejectUnauthorized: false } } : {}),
+        maxRetriesPerRequest: null,
+      });
     } else {
       const password = this.configService.get('REDIS_PASSWORD', '');
       this.redisClient = new Redis({

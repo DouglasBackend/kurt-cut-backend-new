@@ -10,6 +10,10 @@ import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import * as path from 'path';
 import * as fs from 'fs';
+import { promisify } from 'util';
+import { exec } from 'child_process';
+const execAsync = promisify(exec);
+const ffmpegPath = require('ffmpeg-static');
 import { TranscriptionService } from '../transcription/transcription.service';
 import { CreditsService } from '../credits/credits.service';
 import { VIDEO_QUEUE, VideoJobType } from '../queue/queue.constants';
@@ -187,21 +191,54 @@ export class VideosService {
     const videoId = uuidv4();
     const videoRepo = await this.getVideosRepo(usuarioId);
 
-    // Local structured storage
+    // Upload direto para Supabase Storage
     const fileExt = path.extname(file.originalname);
     const relativePath = `${videoId}/video${fileExt}`;
-    const absolutePath = this.storageService.getAbsolutePath(relativePath);
-    const videoDir = path.dirname(absolutePath);
+    const contentType = file.mimetype || 'video/mp4';
 
-    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir, { recursive: true });
-    
-    // Move from multer temp to structured storage
+    await this.storageService.uploadFile(relativePath, file.buffer, contentType);
+
+    // ── Extrair thumbnail localmente com FFmpeg ──
+    let thumbRelativePath: string | null = null;
+    let tempVideoPath: string | null = null;
+    let thumbPath: string | null = null;
+    let duration = 0;
     try {
-      fs.renameSync(file.path, absolutePath);
-    } catch (e) {
-      // Se rename falhar (cross-device), tenta copiar
-      fs.copyFileSync(file.path, absolutePath);
-      fs.unlinkSync(file.path);
+      const tempDir = this.storageService.getTempDir(`upload_thumb_${videoId}`);
+      tempVideoPath = path.join(tempDir, `video_${videoId}${fileExt}`);
+      thumbPath = path.join(tempDir, `thumb_${videoId}.jpg`);
+      
+      // Salva o buffer em disco temporariamente sem bloquear o event loop
+      await fs.promises.writeFile(tempVideoPath, file.buffer);
+      
+      // Extrai um frame do 1º segundo (ou inicio se for curto)
+      await execAsync(`"${ffmpegPath}" -i "${tempVideoPath}" -ss 00:00:01.000 -vframes 1 -y "${thumbPath}"`);
+      
+      // Extrair a duração do vídeo lendo a saída do ffmpeg (ele dá erro sem output, mas imprime o metadata)
+      try {
+        await execAsync(`"${ffmpegPath}" -i "${tempVideoPath}"`);
+      } catch (e: any) {
+        const stderr = e.stderr || '';
+        const match = stderr.match(/Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})/);
+        if (match) {
+          duration = parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseFloat(match[3]);
+        }
+      }
+      
+      if (fs.existsSync(thumbPath)) {
+        const thumbBuffer = await fs.promises.readFile(thumbPath);
+        thumbRelativePath = `${videoId}/thumbnail.jpg`;
+        await this.storageService.uploadFile(thumbRelativePath, thumbBuffer, 'image/jpeg');
+      }
+    } catch (err: any) {
+      this.logger.warn(`Falha ao extrair thumbnail do vídeo upado ${videoId}: ${err.message}`);
+    } finally {
+      if (tempVideoPath && fs.existsSync(tempVideoPath)) {
+        try { fs.unlinkSync(tempVideoPath); } catch {}
+      }
+      if (thumbPath && fs.existsSync(thumbPath)) {
+        try { fs.unlinkSync(thumbPath); } catch {}
+      }
     }
 
     const video = videoRepo.create({
@@ -209,7 +246,9 @@ export class VideosService {
       projeto_id: projetoId,
       titulo: file.originalname.replace(/\.[^/.]+$/, ''),
       tipo_fonte: 'upload',
-      caminho_arquivo: relativePath, 
+      caminho_arquivo: relativePath,
+      miniatura_youtube: thumbRelativePath || undefined,
+      duracao: duration,
       status_transcricao: 'draft',
       status_analise: 'draft',
       preferencias_corte: DEFAULT_PREFERENCES,
@@ -271,14 +310,12 @@ export class VideosService {
     const video = await this.findOne(usuarioId, videoId);
     const videoRepo = await this.getVideosRepo(usuarioId);
 
-    const fileExt = path.extname(file.path);
+    const fileExt = path.extname(file.originalname || '.mp4');
     const relativePath = `${videoId}/video${fileExt}`;
-    const absolutePath = this.storageService.getAbsolutePath(relativePath);
-    const videoDir = path.dirname(absolutePath);
-    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir, { recursive: true });
+    const contentType = file.mimetype || 'video/mp4';
 
-    // Move from multer temp to structured storage
-    fs.renameSync(file.path, absolutePath);
+    // Upload direto para Supabase Storage
+    await this.storageService.uploadFile(relativePath, file.buffer, contentType);
 
     await videoRepo.update(videoId, {
       caminho_arquivo: relativePath,
@@ -334,9 +371,15 @@ export class VideosService {
         message = 'Concluído!';
         status = 'completed';
       } else if (clips.length === 0) {
-        progress = 85;
-        message = 'Criando clipes...';
-        status = 'active';
+        if (!job) {
+          progress = 100;
+          message = 'Nenhum clipe pôde ser gerado';
+          status = 'completed';
+        } else {
+          progress = 85;
+          message = 'Criando clipes...';
+          status = 'active';
+        }
       }
     } else if (transcriptStatus === 'error' || analysisStatus === 'error') {
       status = 'failed';
@@ -372,24 +415,21 @@ export class VideosService {
   async remove(usuarioId: string, id: string): Promise<void> {
     await this.findOne(usuarioId, id); // Ensure ownership
 
-    // 1. Delete the entire video directory locally
-    const videoDir = this.storageService.getAbsolutePath(id);
+    // 1. Delete todos os arquivos da pasta do vídeo no Supabase Storage
     try {
-      if (fs.existsSync(videoDir)) {
-        fs.rmSync(videoDir, { recursive: true, force: true });
-        this.logger.log(`[videos] Deleted video directory: ${videoDir}`);
-      }
+      await this.storageService.deleteFolder(id);
+      this.logger.log(`[videos] Deleted video folder from Supabase: ${id}`);
     } catch (e) {
-      this.logger.warn(`[videos] Failed to delete video directory ${videoDir}: ${e.message}`);
+      this.logger.warn(`[videos] Failed to delete video folder ${id}: ${e.message}`);
     }
 
-    // 3. Cleanup jobs
+    // 2. Cleanup jobs
     try {
       const job = await this.videoQueue.getJob(`yt-${id}`);
       if (job) await job.remove();
     } catch { /* ignored */ }
 
-    // 4. Delete from database (cascades to clips/subtitles)
+    // 3. Delete from database (cascades to clips/subtitles)
     const videoRepo = await this.getVideosRepo(usuarioId);
     await videoRepo.delete(id);
   }

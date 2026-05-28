@@ -33,7 +33,7 @@ export class FaceDetectionService {
     startTime: number,
     duration: number,
   ): Promise<{ xCenter: number; yCenter: number }> {
-    const uploadDir = this.storageService.getAbsoluteUploadDir();
+    const tempDir = this.storageService.getTempDir('face_detection');
     const tempPrefix = `face_detect_${Date.now()}`;
     const framePaths: string[] = [];
 
@@ -47,7 +47,7 @@ export class FaceDetectionService {
       ];
 
       for (let i = 0; i < timestamps.length; i++) {
-        const framePath = path.join(uploadDir, `${tempPrefix}_frame_${i}.jpg`);
+        const framePath = path.join(tempDir, `${tempPrefix}_frame_${i}.jpg`);
         try {
           await execAsync(`"${ffmpegPath}" -ss ${timestamps[i]} -i "${videoPath}" -vframes 1 -q:v 2 -y "${framePath}"`);
           if (fs.existsSync(framePath)) {

@@ -67,9 +67,14 @@ import { StorageModule } from './common/storage/storage.module';
       useFactory: (config: ConfigService) => {
         const redisUrl = config.get<string>('REDIS_URL');
         if (redisUrl) {
+          const isTls = redisUrl.startsWith('rediss://');
           return {
-            redis: redisUrl,
-          };
+            redis: {
+              ...(isTls ? { tls: { rejectUnauthorized: false } } : {}),
+              maxRetriesPerRequest: null,
+            },
+            url: redisUrl, // O bull aceita a URL na raiz do config
+          } as any;
         }
         const password = config.get('REDIS_PASSWORD', '');
         return {

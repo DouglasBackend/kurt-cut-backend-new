@@ -26,17 +26,8 @@ async function bootstrap() {
 
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 
-  const uploadDir = process.env.UPLOAD_DIR || 'upload';
-  const staticPath = path.isAbsolute(uploadDir)
-    ? uploadDir
-    : path.join(process.cwd(), uploadDir);
-  app.use(`/${uploadDir}`, express.static(staticPath, {
-    setHeaders: (res) => {
-      res.set('Access-Control-Allow-Origin', '*');
-      res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
-      res.set('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Range');
-    },
-  }));
+
+  // Arquivos agora são servidos 100% via Supabase Storage URLs (sem express.static local)
 
   // Raw body for Stripe webhooks
   app.use('/api/billing/webhook', express.raw({ type: 'application/json' }));
