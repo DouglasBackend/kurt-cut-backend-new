@@ -68,8 +68,6 @@ export class VideoProcessingProcessor {
         if (videoParam) cleanUrl = `https://www.youtube.com/watch?v=${videoParam}`;
       } catch { /* keep original */ }
 
-      const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
-
       let cookiesPath = path.join(process.cwd(), 'cookies.txt');
       let hasCookies = fs.existsSync(cookiesPath);
       let isTempCookies = false;
@@ -111,8 +109,6 @@ export class VideoProcessingProcessor {
           noPlaylist: true,
           retries: 3,
           cookies: hasCookies ? cookiesPath : undefined,
-          userAgent: userAgent,
-          extractorArgs: 'youtube:player-client=android',
           format: 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best',
           output: videoPath,
           jsRuntimes: 'node',

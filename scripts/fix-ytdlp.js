@@ -44,14 +44,8 @@ async function fix() {
     }
 
     if (fs.existsSync(BIN_PATH)) {
-      console.log(`Checking existing binary at ${BIN_PATH}...`);
-      const stats = fs.statSync(BIN_PATH);
-      if (stats.size > 1000000) { // Simple sanity check for size
-        console.log('Binary looks healthy. Ensuring it is executable...');
-        chmodSync(BIN_PATH, '755');
-        return;
-      }
-      console.log('Binary looks corrupted or too small. Re-downloading...');
+      console.log(`Checking existing binary at ${BIN_PATH}... Removing to force update.`);
+      fs.unlinkSync(BIN_PATH);
     }
 
     await downloadBinary(YTDLP_URL, BIN_PATH);
